@@ -1,10 +1,8 @@
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
-type ContainerState struct {
+type ContainerStats struct {
 	BlkioStats   CtnBlockIO   `json:"blkio_stats"`
 	CPUStats     CtnCPU       `json:"cpu_stats"`
 	ID           string       `json:"id"`
@@ -19,8 +17,10 @@ type ContainerState struct {
 	StorageStats CtnStorage   `json:"storage_stats"`
 }
 
-func (c *ContainerState) String() string {
-	return fmt.Sprintf("CPU percent: %b\n", c.CPUStats.CPUUsage.TotalUsage-c.PrecpuStats.CPUUsage.TotalUsage)
+func (c *ContainerStats) String() string {
+	return fmt.Sprintf("Pre-CPU Usage: %d\nCPU Usage: %d\nCPU Usage Percent: %d%%\n", c.PrecpuStats.CPUUsage.TotalUsage,
+		c.CPUStats.CPUUsage.TotalUsage,
+		(c.CPUStats.CPUUsage.TotalUsage-c.PrecpuStats.CPUUsage.TotalUsage)/10000000)
 }
 
 type MemoryStats struct {

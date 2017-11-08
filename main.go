@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"log"
 	"net/http"
 	"os"
@@ -12,9 +13,20 @@ import (
 )
 
 type edgeNodeCtx struct {
+	Services map[string]serviceInfo
 }
 
-type QueryNodeReturn struct {
+type serviceInfo struct {
+	Name  string
+	Nodes []nodeInfo
+}
+
+type nodeInfo struct {
+	IPAddr     string
+	DockerAddr string
+}
+
+type queryNodeReturn struct {
 	IP string
 }
 
@@ -22,11 +34,18 @@ func main() {
 	srv := initHTTPServer()
 	dockerMonitor := NewDockerMonitor()
 
-	dockerMonitor.MonitorContainer(client.DefaultDockerHost, "afff2e7a2a16", "ocr")
+	var containerID string
+	flag.StringVar(&containerID, "conid", "", "ID of container that is running.")
+	flag.Parse()
+	if containerID == "" {
+		log.Fatalln("Container ID is required.")
+	}
+	dockerMonitor.MonitorContainer(client.DefaultDockerHost, containerID, "ocr")
 
 	closeChan := make(chan os.Signal, 1)
 	signal.Notify(closeChan, syscall.SIGTERM, syscall.SIGINT)
 	<-closeChan
+	dockerMonitor.StopMonitor()
 
 	log.Println("Terminating application.")
 	srv.Shutdown(nil)
@@ -57,7 +76,7 @@ func HandleServerQuery(c *edgeNodeCtx) http.Handler {
 		nodeAddress := c.GetComputeNode(serviceName)
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(QueryNodeReturn{IP: nodeAddress})
+		json.NewEncoder(w).Encode(queryNodeReturn{IP: nodeAddress})
 	})
 }
 

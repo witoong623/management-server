@@ -4,10 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net/http"
-	"time"
 
 	dockerClient "github.com/docker/docker/client"
 )
@@ -19,8 +17,9 @@ const (
 
 // Container represents container that running in specific node.
 type Container struct {
-	ContainerID string
-	ServiceName string
+	cancelSignal chan struct{}
+	ContainerID  string
+	ServiceName  string
 }
 
 // NodeStats holds information about stats of specific node.
@@ -34,15 +33,17 @@ type DockerMonitor struct {
 	updateStatsChan chan NodeStats
 }
 
-// nodeMonitoringCtx holds information related to specific node when monitoring.
 type nodeMonitoringCtx struct {
-	dockerMonitorCtx    *DockerMonitor
-	dockerClient        *dockerClient.Client
-	httpClient          *http.Client
-	monitoredContainers map[string]Container
-	nodeAddr            string
-	nodeCancelSignal    chan struct{}
-	ticker              *time.Ticker
+	dockerMonitorCtx     *DockerMonitor
+	dockerClient         *dockerClient.Client
+	monitoringContainers map[string]Container
+	nodeAddr             string
+	nodeCancelSignal     chan struct{}
+	targetContainer      chan Container
+	updateCPUStats       chan int64
+}
+
+type containerMonitoringCtx struct {
 }
 
 // NewDockerMonitor initiates any necessary type for starting mornitoring resource.
@@ -64,7 +65,7 @@ func (dmCtx *DockerMonitor) MonitorContainer(nodeAddr, conID, serviceName string
 
 	if ok {
 		// If this node is being monitored, just add new container object that want it to be monitored.
-		node.monitoredContainers[conID] = Container{ServiceName: serviceName, ContainerID: conID}
+		node.targetContainer <- Container{ServiceName: serviceName, ContainerID: conID}
 	} else {
 		// If this node haven't been monitored, start monitoring this node.
 		// First, create docker client, 1 client per node.
@@ -74,53 +75,97 @@ func (dmCtx *DockerMonitor) MonitorContainer(nodeAddr, conID, serviceName string
 		}
 
 		monitorContext := nodeMonitoringCtx{
-			dockerMonitorCtx:    dmCtx,
-			dockerClient:        client,
-			monitoredContainers: make(map[string]Container),
-			nodeAddr:            nodeAddr,
-			nodeCancelSignal:    make(chan struct{}),
-			ticker:              time.NewTicker(time.Second * 10),
+			dockerMonitorCtx:     dmCtx,
+			dockerClient:         client,
+			monitoringContainers: make(map[string]Container),
+			nodeAddr:             nodeAddr,
+			nodeCancelSignal:     make(chan struct{}, 1),
+			targetContainer:      make(chan Container),
+			updateCPUStats:       make(chan int64),
 		}
 
-		monitorContext.monitoredContainers[conID] = Container{ServiceName: serviceName, ContainerID: conID}
-		dmCtx.edgeNodeCtxs[nodeAddr] = monitorContext
+		container := Container{
+			cancelSignal: make(chan struct{}, 1),
+			ContainerID:  conID,
+			ServiceName:  serviceName,
+		}
 
+		dmCtx.edgeNodeCtxs[nodeAddr] = monitorContext
 		go monitorContext.startMonitoringNode()
+		monitorContext.targetContainer <- container
+
 	}
 }
 
+// StopMonitor as the name suggests.
+func (dmCtx *DockerMonitor) StopMonitor() {
+	for _, nodeCtx := range dmCtx.edgeNodeCtxs {
+		nodeCtx.stopMonitoringNode()
+	}
+}
+
+// StopMonitorNode stops monitor every container in specific node.
+func (dmCtx *DockerMonitor) StopMonitorNode(nodeAddr string) error {
+	node, ok := dmCtx.edgeNodeCtxs[nodeAddr]
+	if ok {
+		node.stopMonitoringNode()
+		return nil
+	}
+	return fmt.Errorf("node %s not found", nodeAddr)
+}
+
 func (nCtx *nodeMonitoringCtx) startMonitoringNode() {
+	stopReceiveUpdateSignal := make(chan struct{}, 1)
+
+	go func() {
+		for {
+			select {
+			case container := <-nCtx.targetContainer:
+				go nCtx.queryStatus(container.ContainerID, container.cancelSignal)
+				nCtx.monitoringContainers[container.ContainerID] = container
+			case <-nCtx.nodeCancelSignal:
+				for _, container := range nCtx.monitoringContainers {
+					container.cancelSignal <- struct{}{}
+				}
+				stopReceiveUpdateSignal <- struct{}{}
+				break
+			}
+		}
+	}()
+
 	for {
 		select {
-		case <-nCtx.ticker.C:
-			nCtx.queryStatus()
-		case <-nCtx.nodeCancelSignal:
+		case cpuPercent := <-nCtx.updateCPUStats:
+			fmt.Printf("Node Addr: %s, CPU usage: %d%%\n", nCtx.nodeAddr, cpuPercent)
+		case <-stopReceiveUpdateSignal:
 			break
 		}
 	}
 }
 
 func (nCtx *nodeMonitoringCtx) stopMonitoringNode() {
-	nCtx.ticker.Stop()
 	nCtx.nodeCancelSignal <- struct{}{}
 }
 
-func (nCtx *nodeMonitoringCtx) queryStatus() {
-	for _, container := range nCtx.monitoredContainers {
-		ctx, _ := context.WithTimeout(context.Background(), time.Second*5)
-		stats, err := nCtx.dockerClient.ContainerStats(ctx, container.ContainerID, false)
-		if err != nil {
-			log.Fatalf("Error getting stats: %s", err)
-			continue
-		}
+func (nCtx *nodeMonitoringCtx) queryStatus(containerID string, stopSignal <-chan struct{}) {
+	stats, err := nCtx.dockerClient.ContainerStats(context.Background(), containerID, true)
+	if err != nil {
+		log.Printf("Error getting stats: %s", err)
+	}
+	defer stats.Body.Close()
 
-		defer stats.Body.Close()
-		msgBytes, _ := ioutil.ReadAll(stats.Body)
-		var containerStats ContainerState
-		err = json.Unmarshal(msgBytes, &containerStats)
-		if err != nil {
-			log.Printf("JSON Container stats decode error. %s\n", err)
+	decoder := json.NewDecoder(stats.Body)
+	for {
+		select {
+		case <-stopSignal:
+			break
+		default:
+			var containerStats ContainerStats
+			if err := decoder.Decode(&containerStats); err != nil {
+				break
+			}
+			cpuPercentUsage := (containerStats.CPUStats.CPUUsage.TotalUsage - containerStats.PrecpuStats.CPUUsage.TotalUsage) / 10000000
+			nCtx.updateCPUStats <- cpuPercentUsage
 		}
-		fmt.Println(&containerStats)
 	}
 }
