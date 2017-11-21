@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 
@@ -151,18 +152,29 @@ func (nCtx *nodeMonitoringCtx) queryStatus(containerID string, stopSignal <-chan
 	stats, err := nCtx.dockerClient.ContainerStats(context.Background(), containerID, true)
 	if err != nil {
 		log.Printf("Error getting stats: %s", err)
+		return
 	}
 	defer stats.Body.Close()
 
 	decoder := json.NewDecoder(stats.Body)
+	var unused ContainerStats
+	if err := decoder.Decode(&unused); err != nil {
+		log.Println("Error from first decode.")
+		return
+	}
 	for {
 		select {
 		case <-stopSignal:
-			break
+			return
 		default:
 			var containerStats ContainerStats
 			if err := decoder.Decode(&containerStats); err != nil {
-				break
+				if err == io.EOF {
+					log.Println("Remote Docker closed connection.")
+					return
+				}
+				log.Println(err)
+				return
 			}
 			cpuPercentUsage := (containerStats.CPUStats.CPUUsage.TotalUsage - containerStats.PrecpuStats.CPUUsage.TotalUsage) / 10000000
 			nCtx.updateCPUStats <- cpuPercentUsage
