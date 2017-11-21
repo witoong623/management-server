@@ -2,15 +2,12 @@ package main
 
 import (
 	"encoding/json"
-	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
-
-	"github.com/docker/docker/client"
 )
 
 type edgeProxyCtx struct {
@@ -37,19 +34,6 @@ func main() {
 	edgeCtx := &edgeProxyCtx{dockerMonitor: dockerMonitor}
 	srv := initHTTPServer(edgeCtx)
 
-	var containerID string
-	var dockerRemoteAddr string
-	flag.StringVar(&containerID, "conid", "", "ID of container that is running.")
-	flag.StringVar(&dockerRemoteAddr, "docker-addr", "", "Remote API Address of Docker.")
-	flag.Parse()
-	if containerID == "" {
-		log.Fatalln("Container ID is required.")
-	}
-	if dockerRemoteAddr == "" {
-		dockerRemoteAddr = client.DefaultDockerHost
-	}
-	dockerMonitor.MonitorContainer(dockerRemoteAddr, containerID, "ocr")
-
 	closeChan := make(chan os.Signal, 1)
 	signal.Notify(closeChan, syscall.SIGTERM, syscall.SIGINT)
 	<-closeChan
@@ -63,6 +47,8 @@ func main() {
 func initHTTPServer(ctx *edgeProxyCtx) *http.Server {
 	srv := &http.Server{Addr: ":8000"}
 	http.Handle("/getnode", HandleServerQuery(ctx))
+	http.Handle("/startmonitor", HandleStartMonitorCommand(ctx))
+	http.Handle("/stopmonitor", HandleStopMonitorCommand(ctx))
 
 	go func() {
 		if err := srv.ListenAndServe(); err != nil {
@@ -99,19 +85,38 @@ func (c *edgeProxyCtx) GetComputeNode(service string) string {
 	return "0.0.0.0:0"
 }
 
-// HandleMonitorCommand use for development purpose to command proxy server to monitor specific docker continaer
-func HandleMonitorCommand(c *edgeProxyCtx) http.Handler {
+// HandleStartMonitorCommand handles monitor request.
+func HandleStartMonitorCommand(c *edgeProxyCtx) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "GET" {
+		if r.Method != "POST" {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 
-		getQuery := r.URL.Query()
-		remoteAddr := getQuery.Get("remote-addr")
-		containerID := getQuery.Get("conid")
-		serviceName := getQuery.Get("service")
+		r.ParseForm()
+		remoteAddr := r.Form.Get("remote-addr")
+		containerID := r.Form.Get("conid")
+		serviceName := r.Form.Get("service")
 		c.dockerMonitor.MonitorContainer(remoteAddr, containerID, serviceName)
 		w.Write([]byte(fmt.Sprintf("Started monitoring %s container in node %s", containerID, remoteAddr)))
+	})
+}
+
+// HandleStopMonitorCommand handles stop monitor request.
+func HandleStopMonitorCommand(c *edgeProxyCtx) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		r.ParseForm()
+		remoteAddr := r.Form.Get("remote-addr")
+		containerID := r.Form.Get("conid")
+
+		if err := c.dockerMonitor.StopMonitorContainer(remoteAddr, containerID); err != nil {
+			w.Write([]byte(err.Error()))
+		}
+		w.Write([]byte(fmt.Sprintf("Stop monitoring %s container in node %s", containerID, remoteAddr)))
 	})
 }

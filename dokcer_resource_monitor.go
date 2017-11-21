@@ -66,7 +66,7 @@ func (dmCtx *DockerMonitor) MonitorContainer(nodeAddr, conID, serviceName string
 
 	if ok {
 		// If this node is being monitored, just add new container object that want it to be monitored.
-		node.targetContainer <- Container{ServiceName: serviceName, ContainerID: conID}
+		node.targetContainer <- Container{ServiceName: serviceName, ContainerID: conID, cancelSignal: make(chan struct{}, 1)}
 	} else {
 		// If this node haven't been monitored, start monitoring this node.
 		// First, create docker client, 1 client per node.
@@ -103,6 +103,7 @@ func (dmCtx *DockerMonitor) StopMonitor() {
 	for _, nodeCtx := range dmCtx.edgeNodeCtxs {
 		nodeCtx.stopMonitoringNode()
 	}
+	dmCtx.edgeNodeCtxs = make(map[string]nodeMonitoringCtx)
 }
 
 // StopMonitorNode stops monitor every container in specific node.
@@ -110,9 +111,29 @@ func (dmCtx *DockerMonitor) StopMonitorNode(nodeAddr string) error {
 	node, ok := dmCtx.edgeNodeCtxs[nodeAddr]
 	if ok {
 		node.stopMonitoringNode()
+		delete(dmCtx.edgeNodeCtxs, nodeAddr)
 		return nil
 	}
 	return fmt.Errorf("node %s not found", nodeAddr)
+}
+
+// StopMonitorContainer stops monitor specific container in specfici node.
+func (dmCtx *DockerMonitor) StopMonitorContainer(nodeAddr, conID string) error {
+	node, ok := dmCtx.edgeNodeCtxs[nodeAddr]
+	if ok {
+		container, ok := node.monitoringContainers[conID]
+		if ok {
+			container.cancelSignal <- struct{}{}
+			delete(node.monitoringContainers, conID)
+			if len(node.monitoringContainers) == 0 {
+				node.stopMonitoringNode()
+				delete(dmCtx.edgeNodeCtxs, nodeAddr)
+			}
+		} else {
+			return fmt.Errorf("container ID %s not found", conID)
+		}
+	}
+	return fmt.Errorf("node address %s not found", nodeAddr)
 }
 
 func (nCtx *nodeMonitoringCtx) startMonitoringNode() {
