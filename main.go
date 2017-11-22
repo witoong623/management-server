@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -27,6 +26,10 @@ type nodeInfo struct {
 
 type queryNodeReturn struct {
 	IP string
+}
+
+type genericReturnMessage struct {
+	Message string
 }
 
 func main() {
@@ -95,10 +98,16 @@ func HandleStartMonitorCommand(c *edgeProxyCtx) http.Handler {
 
 		r.ParseForm()
 		remoteAddr := r.Form.Get("remote-addr")
+		log.Printf("Remote address is %s", remoteAddr)
 		containerID := r.Form.Get("conid")
 		serviceName := r.Form.Get("service")
-		c.dockerMonitor.MonitorContainer(remoteAddr, containerID, serviceName)
-		w.Write([]byte(fmt.Sprintf("Started monitoring %s container in node %s", containerID, remoteAddr)))
+		err := c.dockerMonitor.MonitorContainer(remoteAddr, containerID, serviceName)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(genericReturnMessage{Message: err.Error()})
+			return
+		}
 	})
 }
 
@@ -115,8 +124,15 @@ func HandleStopMonitorCommand(c *edgeProxyCtx) http.Handler {
 		containerID := r.Form.Get("conid")
 
 		if err := c.dockerMonitor.StopMonitorContainer(remoteAddr, containerID); err != nil {
-			w.Write([]byte(err.Error()))
+			WriteJSONHTTPResponse(w, genericReturnMessage{Message: err.Error()}, http.StatusBadRequest)
+			return
 		}
-		w.Write([]byte(fmt.Sprintf("Stop monitoring %s container in node %s", containerID, remoteAddr)))
 	})
+}
+
+// WriteJSONHTTPResponse is a helper function use to write JSON HTTP response.
+func WriteJSONHTTPResponse(w http.ResponseWriter, jsonObject interface{}, httpCode int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(httpCode)
+	json.NewEncoder(w).Encode(jsonObject)
 }

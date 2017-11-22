@@ -60,7 +60,7 @@ func NewDockerMonitor() *DockerMonitor {
 }
 
 // MonitorContainer start monitoring container in specific node.
-func (dmCtx *DockerMonitor) MonitorContainer(nodeAddr, conID, serviceName string) {
+func (dmCtx *DockerMonitor) MonitorContainer(nodeAddr, conID, serviceName string) error {
 	// First, check if this node is being monitored or not.
 	node, ok := dmCtx.edgeNodeCtxs[nodeAddr]
 
@@ -72,7 +72,7 @@ func (dmCtx *DockerMonitor) MonitorContainer(nodeAddr, conID, serviceName string
 		// First, create docker client, 1 client per node.
 		client, err := dockerClient.NewClient(nodeAddr, DockerVersion, dmCtx.httpClient, nil)
 		if err != nil {
-			log.Fatalln(err)
+			return err
 		}
 
 		monitorContext := nodeMonitoringCtx{
@@ -94,8 +94,8 @@ func (dmCtx *DockerMonitor) MonitorContainer(nodeAddr, conID, serviceName string
 		dmCtx.edgeNodeCtxs[nodeAddr] = monitorContext
 		go monitorContext.startMonitoringNode()
 		monitorContext.targetContainer <- container
-
 	}
+	return nil
 }
 
 // StopMonitor as the name suggests.
@@ -129,11 +129,11 @@ func (dmCtx *DockerMonitor) StopMonitorContainer(nodeAddr, conID string) error {
 				node.stopMonitoringNode()
 				delete(dmCtx.edgeNodeCtxs, nodeAddr)
 			}
-		} else {
-			return fmt.Errorf("container ID %s not found", conID)
+			return nil
 		}
+		return fmt.Errorf("container ID %s not found or not being monitored", conID)
 	}
-	return fmt.Errorf("node address %s not found", nodeAddr)
+	return fmt.Errorf("node address %s not found or not being monitored", nodeAddr)
 }
 
 func (nCtx *nodeMonitoringCtx) startMonitoringNode() {
