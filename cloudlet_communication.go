@@ -3,10 +3,10 @@ package main
 import "net/http"
 
 // HandleCloudletRegisterCommand handles monitor request.
-func HandleCloudletRegisterCommand(c *edgeProxyCtx) http.Handler {
+func HandleCloudletRegisterCommand(c *manageCtx) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			w.WriteHeader(http.StatusBadRequest)
+			w.WriteHeader(http.StatusMethodNotAllowed)
 			w.Write([]byte("accept only POST method"))
 			return
 		}
@@ -20,9 +20,12 @@ func HandleCloudletRegisterCommand(c *edgeProxyCtx) http.Handler {
 		cIP := formData.Get("ip")
 		cDomain := formData.Get("domain")
 
-		_, err := NewCloudletNode(cName, cIP, cDomain)
+		cNode, err := NewCloudletNode(cName, cIP, cDomain)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
+
+		c.Cloudlets[cName] = cNode
 	})
 }
