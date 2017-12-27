@@ -1,0 +1,9 @@
+{
+    "RedisHostName": "127.0.0.1",
+    "RedisPortNumber": 6379,
+
+    "DNSServerAddr": "127.0.0.1",
+    "DNSPortNumber": 53,
+    "DNSCacheTime": 36000,
+    "UpstreamDNSServerAddr": "8.8.8.8"
+}
