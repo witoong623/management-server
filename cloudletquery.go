@@ -1,11 +1,18 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
 	"net/url"
 )
+
+var httpClient *http.Client
+
+func init() {
+	httpClient = new(http.Client)
+}
 
 type CloudletQueryService struct {
 	httpClient *http.Client
@@ -15,22 +22,23 @@ type WorkloadStatusMessage struct {
 	ClientCount int32
 }
 
+// NewCloudletQueryService creates *CloudletQueryService
 func NewCloudletQueryService() *CloudletQueryService {
 	return &CloudletQueryService{
-		httpClient: new(http.Client),
+		httpClient: httpClient,
 	}
 }
 
 // QueryCloudletWorkload queries workload of specific cloudlet
 // and returns channel of WorkloadStatusMessage
-func (c *CloudletQueryService) QueryCloudletWorkload(cloudlet *CloudletNode) <-chan WorkloadStatusMessage {
+func (c *CloudletQueryService) QueryCloudletWorkload(ctx context.Context, cloudlet *CloudletNode) <-chan WorkloadStatusMessage {
 	outChan := make(chan WorkloadStatusMessage)
-	go queryCloudletWorkload(outChan, c, cloudlet)
+	go queryCloudletWorkload(ctx, outChan, c, cloudlet)
 
 	return outChan
 }
 
-func queryCloudletWorkload(outChan chan WorkloadStatusMessage, c *CloudletQueryService, cn *CloudletNode) {
+func queryCloudletWorkload(ctx context.Context, outChan chan WorkloadStatusMessage, c *CloudletQueryService, cn *CloudletNode) {
 	queryServiceAddress := "http://" + cn.IPAddr + ":6000/info/currentclient"
 	parsedURL, err := url.Parse(queryServiceAddress)
 	if err != nil {
@@ -53,13 +61,19 @@ func queryCloudletWorkload(outChan chan WorkloadStatusMessage, c *CloudletQueryS
 
 	decoder := json.NewDecoder(response.Body)
 	var statusMsg WorkloadStatusMessage
+	cancel := ctx.Done()
+
 	for {
-		if err := decoder.Decode(&statusMsg); err != nil {
-			log.Println(err)
-			close(outChan)
-			break
+		select {
+		case <-cancel:
+			return
+		default:
+			if err := decoder.Decode(&statusMsg); err != nil {
+				log.Println(err)
+				close(outChan)
+				break
+			}
+			outChan <- statusMsg
 		}
-		log.Println("read msg")
-		outChan <- statusMsg
 	}
 }
