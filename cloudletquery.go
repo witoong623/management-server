@@ -52,12 +52,15 @@ func queryCloudletWorkload(ctx context.Context, outChan chan WorkloadStatusMessa
 	}
 
 	response, err := c.httpClient.Get(parsedURL.String())
-	log.Printf("Call pass response")
 	if err != nil {
-		log.Printf("Cannot get service from %s, error: %s", queryServiceAddress, err.Error())
+		log.Printf("cannot get service from %s, error: %s", queryServiceAddress, err.Error())
 		return
 	}
 	defer response.Body.Close()
+	defer func() {
+		close(outChan)
+		log.Printf("workload monitoring of cloudlet %v stoped", cn.Name)
+	}()
 
 	decoder := json.NewDecoder(response.Body)
 	var statusMsg WorkloadStatusMessage
@@ -70,8 +73,7 @@ func queryCloudletWorkload(ctx context.Context, outChan chan WorkloadStatusMessa
 		default:
 			if err := decoder.Decode(&statusMsg); err != nil {
 				log.Println(err)
-				close(outChan)
-				break
+				return
 			}
 			outChan <- statusMsg
 		}

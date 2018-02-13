@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"log"
 	"sync"
 )
 
@@ -19,7 +18,7 @@ type CloudletNode struct {
 
 	// AvailableServices is the collection of service name that are currently
 	// available in this Cloudlet.
-	AvailableServices []Service
+	AvailableServices []*Service
 
 	cloudletQueryService *CloudletQueryService
 	workloadMutex        sync.Mutex
@@ -38,9 +37,9 @@ func NewCloudletNode(name, ip, domain string) (*CloudletNode, error) {
 		IPAddr:               ip,
 		cloudletQueryService: queryService,
 		cancelWorkloadQuery:  cancelWorkloadQuery,
+		AvailableServices:    make([]*Service, 0, 10),
 	}
 
-	log.Printf("got register request from %v, IP %v and domain %v\n", name, ip, domain)
 	statusChan := queryService.QueryCloudletWorkload(ctx, cloudlet)
 	go cloudlet.updateCloudletWorkload(statusChan)
 
@@ -54,21 +53,24 @@ func (c *CloudletNode) GetCurrentWorkload() int32 {
 	return c.currentWorkload
 }
 
+// SetCurrentWorkload sets current workload of cloudlet
+func (c *CloudletNode) SetCurrentWorkload(val int32) {
+	c.workloadMutex.Lock()
+	defer c.workloadMutex.Unlock()
+	c.currentWorkload = val
+}
+
 func (c *CloudletNode) updateCloudletWorkload(workloadChan <-chan WorkloadStatusMessage) {
-	more := true
 	for status := range workloadChan {
 		c.workloadMutex.Lock()
 		c.currentWorkload = status.ClientCount
-		if c.currentWorkload > 0 || more {
-			// TODO: This is for debug only, delete it when do system testing
-			log.Printf("Current workload is %d", c.currentWorkload)
-			more = !more
-		}
 		c.workloadMutex.Unlock()
 	}
 }
 
 // UnRegisterCloudlet stops any operation with given Cloudlet
 func (c *CloudletNode) UnRegisterCloudlet() {
+	// calling this method will signal cancel context, workload query service closes outChan
+	// updateCloudletWorkload stop working (because channel is close)
 	c.cancelWorkloadQuery()
 }

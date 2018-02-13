@@ -17,6 +17,7 @@ type DNSServer struct {
 }
 
 func (d *DNSServer) parseQuery(clientIP string, m *dns.Msg) {
+	autho := false
 	for _, q := range m.Question {
 		var err error
 		var ip string
@@ -27,7 +28,7 @@ func (d *DNSServer) parseQuery(clientIP string, m *dns.Msg) {
 		requestedService, err := d.manageCtx.ServiceManager.GetService(cleanedName)
 		if err == nil {
 			type serviceAndNode struct {
-				service      Service
+				service      *Service
 				cloudletNode *CloudletNode
 			}
 			availableNodes := make([]*serviceAndNode, 0, len(d.manageCtx.Cloudlets))
@@ -43,28 +44,49 @@ func (d *DNSServer) parseQuery(clientIP string, m *dns.Msg) {
 			// right now, we got all of nodes that serve that service
 			var leastwork *serviceAndNode
 			var leastworkvalue int32
+			var currentworkvalue int32
 			if len(availableNodes) == 1 {
 				// only 1 node available
 				leastwork = availableNodes[0]
+				leastworkvalue = leastwork.cloudletNode.GetCurrentWorkload()
 			} else {
 				// find least work
 				leastwork = availableNodes[0]
 				leastworkvalue = leastwork.cloudletNode.GetCurrentWorkload()
 				for _, nodeNservice := range availableNodes[1:] {
-					currentworkvalue := nodeNservice.cloudletNode.GetCurrentWorkload()
+					currentworkvalue = nodeNservice.cloudletNode.GetCurrentWorkload()
 					if currentworkvalue < leastworkvalue {
 						leastworkvalue = currentworkvalue
 						leastwork = nodeNservice
 					}
 				}
 			}
-			// we got 1 Cloudlet that have least works
-			rr, err := dns.NewRR(fmt.Sprintf("%s A %s", q.Name, leastwork.cloudletNode.IPAddr))
-			if err == nil {
-				m.Answer = append(m.Answer, rr)
-				return
+
+			// check if workload is least than threadhold
+			if leastworkvalue <= MaxCloudletWorkload {
+				// increase workload of selected cloudlet in DNS server to better update workload value
+				leastwork.cloudletNode.SetCurrentWorkload(leastworkvalue + 1)
+				// we got 1 Cloudlet that have least works
+				log.Printf("IP %v goes to cloudlet %v, with workload %v", clientIP, leastwork.cloudletNode.Name, leastworkvalue)
+				rr := new(dns.A)
+				rr.Hdr = dns.RR_Header{
+					Name:   q.Name,
+					Rrtype: dns.TypeA,
+					Class:  dns.ClassINET,
+					Ttl:    0,
+				}
+				rr.A = net.ParseIP(leastwork.cloudletNode.IPAddr)
+				//rr, err := dns.NewRR(fmt.Sprintf("%s 0 A %s", q.Name, leastwork.cloudletNode.IPAddr))
+				if err == nil {
+					autho = true
+					m.Answer = append(m.Answer, rr)
+					continue
+				}
+				// I don't know why err isn't nil so let resolve domain name using normal procedure
+			} else {
+				log.Printf("current workload %v exceeds threadhold %v, go to normal server", leastworkvalue, MaxCloudletWorkload)
 			}
-			// I don't know why err isn't nil so let resolve domain name using normal procedure
+
 		}
 
 		if q.Qtype == dns.TypeA {
@@ -93,7 +115,7 @@ func (d *DNSServer) parseQuery(clientIP string, m *dns.Msg) {
 			}
 
 			if r.Rcode != dns.RcodeSuccess {
-				log.Printf(" *** invalid answer name %s after %s query for %s\n", q.Name, qType, q.Name)
+				log.Printf(" *** invalid answer name %s after %s query for %s", q.Name, qType, q.Name)
 				return
 			}
 			// Parse Answer
@@ -112,6 +134,7 @@ func (d *DNSServer) parseQuery(clientIP string, m *dns.Msg) {
 			m.Answer = r.Answer
 		}
 	}
+	m.Authoritative = autho
 }
 
 func (d *DNSServer) handleDnsRequest(w dns.ResponseWriter, r *dns.Msg) {
@@ -132,7 +155,7 @@ func (d *DNSServer) handleDnsRequest(w dns.ResponseWriter, r *dns.Msg) {
 // ListenAndServe listens to DNS request.
 func (d *DNSServer) ListenAndServe() {
 	dns.HandleFunc(".", d.handleDnsRequest)
-	log.Printf("start domain name server at IP %v\n", Config.DNSServerAddr)
+	log.Printf("start domain name server at IP %v", Config.DNSServerAddr)
 
 	err := d.dnsServer.ListenAndServe()
 	if err != nil {
